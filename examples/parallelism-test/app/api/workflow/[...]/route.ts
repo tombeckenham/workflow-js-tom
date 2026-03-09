@@ -1,4 +1,5 @@
-import { serve } from "@upstash/workflow/nextjs";
+import { WorkflowContext } from "@upstash/workflow";
+import { createWorkflow, serveMany } from "@upstash/workflow/nextjs";
 import { Redis } from "@upstash/redis";
 
 const redis = new Redis({
@@ -27,16 +28,38 @@ async function trackStep(fn: () => Promise<void>) {
   }
 }
 
-export const { POST } = serve<Payload>(async (context) => {
+const subWorkflow = createWorkflow(async (context: WorkflowContext<Payload>) => {
+  await context.run("sub-start", () => "sub started");
+  await context.run("sub-slow-work", async () => {
+    await trackStep(() => new Promise((resolve) => setTimeout(resolve, 5_000)));
+    return { done: true };
+  });
+  await context.run("sub-end", () => "sub finished");
+});
+
+const mainWorkflow = createWorkflow(async (context: WorkflowContext<Payload>) => {
   await context.run("start", () => "started");
   await context.run("slow-work-1", async () => {
     await trackStep(() => new Promise((resolve) => setTimeout(resolve, 5_000)));
     return { done: true };
   });
   await context.run("middle", () => "checkpoint");
+  await context.invoke("invoke-sub-workflow", {
+    workflow: subWorkflow,
+    body: context.requestPayload,
+    flowControl: {
+      key: "parallelism-test",
+      parallelism: 5,
+    },
+  });
   await context.run("slow-work-2", async () => {
     await trackStep(() => new Promise((resolve) => setTimeout(resolve, 5_000)));
     return { done: true };
   });
   await context.run("end", () => "finished");
+});
+
+export const { POST } = serveMany({
+  mainWorkflow,
+  subWorkflow,
 });

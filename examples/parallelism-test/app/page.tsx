@@ -16,6 +16,8 @@ type StatusResponse = {
   summary: {
     totalRuns: number;
     completed: number;
+    subTotal: number;
+    subCompleted: number;
     allComplete: boolean;
     currentConcurrent: number;
     maxConcurrentObserved: number;
@@ -24,6 +26,7 @@ type StatusResponse = {
     verdict: string;
   };
   workflows: WorkflowStatus[];
+  subWorkflows: WorkflowStatus[];
 };
 
 export default function Home() {
@@ -99,6 +102,7 @@ export default function Home() {
       <h1 style={{ marginBottom: "0.5rem" }}>Parallelism Test</h1>
       <p style={{ color: "var(--text-muted)", marginBottom: "1.5rem" }}>
         Triggers 40 workflows with <code>flowControl.parallelism = 5</code>.
+        Each workflow invokes a sub-workflow with the same flow control key.
         Max concurrency should never exceed 5.
       </p>
 
@@ -138,8 +142,10 @@ export default function Home() {
             marginBottom: "1.5rem",
             flexWrap: "wrap",
           }}>
-            <Stat label="Total runs" value={status.summary.totalRuns} />
-            <Stat label="Completed" value={status.summary.completed} />
+            <Stat label="Main runs" value={status.summary.totalRuns} />
+            <Stat label="Main done" value={status.summary.completed} />
+            <Stat label="Sub runs" value={status.summary.subTotal} />
+            <Stat label="Sub done" value={status.summary.subCompleted} />
             <Stat label="Executing now" value={executingCount} color="#3b82f6" />
             <Stat
               label="Max concurrent"
@@ -162,37 +168,17 @@ export default function Home() {
             {status.summary.verdict}
           </div>
 
-          {/* Workflow grid */}
-          <h3 style={{ marginBottom: "0.5rem" }}>Workflows</h3>
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))",
-            gap: "8px",
-          }}>
-            {status.workflows.map((w, i) => {
-              const label = getStateLabel(w);
-              const color = getStateColor(label);
-              return (
-                <div
-                  key={w.runId}
-                  style={{
-                    padding: "8px",
-                    borderRadius: "6px",
-                    border: `2px solid ${color}`,
-                    background: `${color}15`,
-                    textAlign: "center",
-                    fontSize: "0.85rem",
-                  }}
-                >
-                  <div style={{ fontWeight: "bold" }}>#{i}</div>
-                  <div style={{ color, fontWeight: 600 }}>{label}</div>
-                  <div style={{ fontSize: "0.65rem", color: "var(--text-dim)", marginTop: "4px", wordBreak: "break-all" }}>
-                    {w.runId.slice(-8)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          {/* Main workflow grid */}
+          <h3 style={{ marginBottom: "0.5rem" }}>Main Workflows</h3>
+          <WorkflowGrid workflows={status.workflows} getStateLabel={getStateLabel} getStateColor={getStateColor} />
+
+          {/* Sub-workflow grid */}
+          {status.subWorkflows.length > 0 && (
+            <>
+              <h3 style={{ marginBottom: "0.5rem", marginTop: "1.5rem" }}>Sub-Workflows (invoked)</h3>
+              <WorkflowGrid workflows={status.subWorkflows} getStateLabel={getStateLabel} getStateColor={getStateColor} />
+            </>
+          )}
 
           {polling && (
             <p style={{ marginTop: "1rem", color: "var(--text-dim)", fontSize: "0.85rem" }}>
@@ -216,6 +202,44 @@ function Stat({ label, value, color }: { label: string; value: number; color?: s
     <div>
       <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase" }}>{label}</div>
       <div style={{ fontSize: "1.5rem", fontWeight: "bold", color: color ?? "var(--text)" }}>{value}</div>
+    </div>
+  );
+}
+
+function WorkflowGrid({ workflows, getStateLabel, getStateColor }: {
+  workflows: WorkflowStatus[];
+  getStateLabel: (w: WorkflowStatus) => string;
+  getStateColor: (label: string) => string;
+}) {
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))",
+      gap: "8px",
+    }}>
+      {workflows.map((w, i) => {
+        const label = getStateLabel(w);
+        const color = getStateColor(label);
+        return (
+          <div
+            key={w.runId}
+            style={{
+              padding: "8px",
+              borderRadius: "6px",
+              border: `2px solid ${color}`,
+              background: `${color}15`,
+              textAlign: "center",
+              fontSize: "0.85rem",
+            }}
+          >
+            <div style={{ fontWeight: "bold" }}>#{i}</div>
+            <div style={{ color, fontWeight: 600 }}>{label}</div>
+            <div style={{ fontSize: "0.65rem", color: "var(--text-dim)", marginTop: "4px", wordBreak: "break-all" }}>
+              {w.runId.slice(-8)}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

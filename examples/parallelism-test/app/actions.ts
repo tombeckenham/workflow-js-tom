@@ -27,7 +27,7 @@ export async function triggerWorkflows() {
   await redis.del("parallelism-test:concurrent", "parallelism-test:max");
 
   const triggerOptions = Array.from({ length: WORKFLOW_COUNT }, (_, i): TriggerOptions => ({
-    url: `${baseUrl}/api/workflow`,
+    url: `${baseUrl}/api/workflow/mainWorkflow`,
     body: { workflowIndex: i },
     label: LABEL,
     flowControl: {
@@ -44,12 +44,40 @@ export async function triggerWorkflows() {
   };
 }
 
-export async function getWorkflowStatus(runIds: string[]) {
-  const results = await Promise.all(
-    runIds.map((id) => client.logs({ workflowRunId: id }))
-  );
+type LogsResult = Awaited<ReturnType<typeof client.logs>>;
+type RunLog = LogsResult["runs"][number];
 
-  const workflows = results.map(({ runs }, index) => {
+function parseWorkflowRun(run: RunLog, startStep: string, endStep: string) {
+  const completedStepNames = new Set<string>();
+  for (const stepGroup of run.steps) {
+    if (stepGroup.type === "next") continue;
+    for (const step of stepGroup.steps) {
+      completedStepNames.add(step.stepName);
+    }
+  }
+
+  return {
+    runId: run.workflowRunId,
+    state: run.workflowState,
+    createdAt: run.workflowRunCreatedAt,
+    completedAt: run.workflowRunCompletedAt,
+    hasStarted: completedStepNames.has(startStep),
+    hasFinishedWork: completedStepNames.has(endStep),
+  };
+}
+
+export async function getWorkflowStatus(runIds: string[]) {
+  const baseUrl =
+    process.env.UPSTASH_WORKFLOW_URL ?? "http://localhost:3001";
+
+  const [mainResults, subLogs, currentConcurrent, maxConcurrent] = await Promise.all([
+    Promise.all(runIds.map((id) => client.logs({ workflowRunId: id }))),
+    client.logs({ workflowUrl: `${baseUrl}/api/workflow/subWorkflow` }),
+    redis.get<number>("parallelism-test:concurrent").then((v) => v ?? 0),
+    redis.get<number>("parallelism-test:max").then((v) => v ?? 0),
+  ]);
+
+  const workflows = mainResults.map(({ runs }, index) => {
     const run = runs[0];
     if (!run) {
       return {
@@ -60,39 +88,25 @@ export async function getWorkflowStatus(runIds: string[]) {
         hasFinishedWork: false,
       };
     }
-
-    const completedStepNames = new Set<string>();
-    for (const stepGroup of run.steps) {
-      if (stepGroup.type === "next") continue;
-      for (const step of stepGroup.steps) {
-        completedStepNames.add(step.stepName);
-      }
-    }
-
-    return {
-      runId: run.workflowRunId,
-      state: run.workflowState,
-      createdAt: run.workflowRunCreatedAt,
-      completedAt: run.workflowRunCompletedAt,
-      hasStarted: completedStepNames.has("start"),
-      hasFinishedWork: completedStepNames.has("end"),
-    };
+    return parseWorkflowRun(run, "start", "end");
   });
 
-  // Read concurrency from Redis (set by workflow steps)
-  const [currentConcurrent, maxConcurrent] = await Promise.all([
-    redis.get<number>("parallelism-test:concurrent").then((v) => v ?? 0),
-    redis.get<number>("parallelism-test:max").then((v) => v ?? 0),
-  ]);
+  const subWorkflows = subLogs.runs.map((run) =>
+    parseWorkflowRun(run, "sub-start", "sub-end")
+  );
 
   const completed = workflows.filter((w) => w.state === "RUN_SUCCESS").length;
+  const subCompleted = subWorkflows.filter((w) => w.state === "RUN_SUCCESS").length;
+  const allComplete = completed === runIds.length;
   const parallelismRespected = maxConcurrent <= 5;
 
   return {
     summary: {
       totalRuns: workflows.length,
       completed,
-      allComplete: completed === runIds.length,
+      subTotal: subWorkflows.length,
+      subCompleted,
+      allComplete,
       currentConcurrent,
       maxConcurrentObserved: maxConcurrent,
       parallelismLimit: 5,
@@ -102,5 +116,6 @@ export async function getWorkflowStatus(runIds: string[]) {
         : `FAIL: max concurrency ${maxConcurrent} > 5`,
     },
     workflows,
+    subWorkflows,
   };
 }
